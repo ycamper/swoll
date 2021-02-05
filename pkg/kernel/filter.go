@@ -40,8 +40,9 @@ const (
 	ftypePidNS   filterFlag = 1 << 14
 	ftypeSyscall filterFlag = 1 << 15
 	// filter actions
-	factionAllow filterAction = 0
-	factionDrop  filterAction = 1
+	factionAllow   filterAction = 1
+	factionDrop    filterAction = 2
+	factionErrOnly filterAction = 1 << 7
 )
 
 const (
@@ -210,14 +211,21 @@ func FilterRuleSetPid(pid int) FilterRuleOption {
 
 func FilterRuleSetActionDrop() FilterRuleOption {
 	return func(rule *FilterRule) error {
-		rule.val.action = factionDrop
+		rule.val.action |= factionDrop
 		return nil
 	}
 }
 
 func FilterRuleSetActionAllow() FilterRuleOption {
 	return func(rule *FilterRule) error {
-		rule.val.action = factionAllow
+		rule.val.action |= factionAllow
+		return nil
+	}
+}
+
+func FilterRuleSetActionErrorsOnly() FilterRuleOption {
+	return func(rule *FilterRule) error {
+		rule.val.action |= factionErrOnly
 		return nil
 	}
 }
@@ -356,13 +364,21 @@ func (f filterFlag) String() string {
 }
 
 func (a filterAction) String() string {
-	switch a {
-	case factionAllow:
-		return "ACTION_ALLOW"
-	case factionDrop:
-		return "ACTION_DROP"
+	out := []string{}
+
+	if a&factionAllow > 0 {
+		out = append(out, "ACTION_ALLOW")
 	}
-	return "ACTION_UNKNOWN"
+
+	if a&factionDrop > 0 {
+		out = append(out, "ACTION_DROP")
+	}
+
+	if a&factionErrOnly > 0 {
+		out = append(out, "ACTION_ERRONLY")
+	}
+
+	return strings.Join(out, "|")
 }
 
 func (k filterKey) String() string {

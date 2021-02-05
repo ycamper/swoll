@@ -67,6 +67,7 @@ struct swoll_event_key {
     struct on_enter_args on_enter;
     __u64                uid_gid;
     __u64                entr_timestamp;
+    __u32 flags;
 };
 
 struct swoll_metrics_key {
@@ -167,8 +168,9 @@ struct ipc_namespace {
 
 
 /* filtering definitions {{{ */
-#define SWOLL_FILTER_ALLOW                 (0)
-#define SWOLL_FILTER_DROP                  (1)
+#define SWOLL_FILTER_ALLOW                 (1)
+#define SWOLL_FILTER_DROP                  (2)
+#define SWOLL_FILTER_ERRONLY               (1 << 7) 
 
 /* filter types are the above (FILTER_MODE, etc) */
 typedef __u16 swoll_filter_type_t;
@@ -1402,7 +1404,7 @@ swoll__run_nfilter(struct swoll_event_args * ctx, __u16 mode)
     int                  i;
 
     if (!swoll__is_filter_enabled(FILTER_MODE_ENABLED)) {
-        D_("Swoll filter is not enabled....\n");
+        //D_("Swoll filter is not enabled....\n");
         return SWOLL_FILTER_DROP;
     }
 
@@ -1439,7 +1441,7 @@ swoll__run_nfilter(struct swoll_event_args * ctx, __u16 mode)
                     return SWOLL_FILTER_DROP;
                 }
 
-                D_("syscall_nfilter matched sc=%u eval=%d hits=%llu\n", syscall_nr, i, val->hits);
+                //D_("syscall_nfilter matched sc=%u eval=%d hits=%llu\n", syscall_nr, i, val->hits);
                 return val->action;
             }
         }
@@ -1536,7 +1538,7 @@ swoll__fill_metrics(struct swoll_event_args * ctx, __u8 state)
         return;
     }
 
-    if (swoll__run_nfilter(ctx, FILTER_MODE_METRICS) == SWOLL_FILTER_DROP) {
+    if ((swoll__run_nfilter(ctx, FILTER_MODE_METRICS) & SWOLL_FILTER_DROP)) {
         return;
     }
 
@@ -2545,6 +2547,7 @@ swoll__enter(struct swoll_event_args * ctx)
     __u64                  pid_tid    = bpf_get_current_pid_tgid();
     __u32                  syscall_nr = swoll__syscall_get_nr(ctx);
     struct swoll_event_key ev_key;
+    __u8 filter_ret;
 
 #ifndef SWOLL__NO_METRICS
     swoll__fill_metrics(ctx, METRICS_STATE_ENTER);
@@ -2562,7 +2565,7 @@ swoll__enter(struct swoll_event_args * ctx)
         return 0;
     }
 
-    if (swoll__run_nfilter(ctx, FILTER_MODE_SYSCALL) == SWOLL_FILTER_DROP) {
+    if ((filter_ret = swoll__run_nfilter(ctx, FILTER_MODE_SYSCALL)) == SWOLL_FILTER_DROP) {
         return 0;
     }
 
@@ -2571,6 +2574,11 @@ swoll__enter(struct swoll_event_args * ctx)
 
     ev_key.uid_gid        = bpf_get_current_uid_gid();
     ev_key.entr_timestamp = bpf_ktime_get_ns();
+
+    if ((filter_ret & SWOLL_FILTER_ERRONLY)) {
+        D_("Setting error-only flag\n");
+        ev_key.flags |= SWOLL_FILTER_ERRONLY;
+    }
 
     bpf_map_update_elem(&swoll_state_map, &pid_tid, &ev_key, BPF_ANY);
 
@@ -2724,6 +2732,11 @@ swoll__exit(struct swoll_event_args * ctx)
             break;
     }     /* switch */
 
+    if ((ev_key->flags & SWOLL_FILTER_ERRONLY) && (event->errno == 0)) {
+        D_("[%llu/%d] dropping event due to the error-only action being set\n", event->pid_tid, event->syscall);
+        return 0;
+    }
+
     bpf_perf_event_output(ctx, &swoll_perf_output,
             BPF_F_CURRENT_CPU, event, sizeof(struct swoll_event));
     bpf_map_delete_elem(&swoll_state_map, &pid_tid);
@@ -2743,7 +2756,7 @@ swoll__syscalls_execve(struct swoll_event_args * ctx)
     __u64                tid   = bpf_get_current_pid_tgid() >> 32;
     struct task_struct * task  = (struct task_struct *)bpf_get_current_task();
 
-    if (swoll__run_nfilter(ctx, FILTER_MODE_SYSCALL) == SWOLL_FILTER_DROP) {
+    if ((swoll__run_nfilter(ctx, FILTER_MODE_SYSCALL) & SWOLL_FILTER_DROP)) {
         return 0;
     }
 

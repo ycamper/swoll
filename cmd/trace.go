@@ -212,6 +212,7 @@ var cmdTrace = &cobra.Command{
 					kernel.NewFilterRuleN(
 						kernel.FilterRuleSetModeSyscall(),
 						kernel.FilterRuleSetSyscall(scall),
+						kernel.FilterRuleSetActionErrorsOnly(),
 						kernel.FilterRuleSetActionAllow())); err != nil {
 					log.Fatal(err)
 				}

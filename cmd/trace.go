@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antonmedv/expr"
+	"github.com/antonmedv/expr/vm"
 	"github.com/criticalstack/swoll/api/v1alpha1"
 	"github.com/criticalstack/swoll/pkg/event"
 	"github.com/criticalstack/swoll/pkg/event/reader"
@@ -22,6 +24,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
+
+type Event struct {
+	Base *event.TraceEvent
+}
+
+func (e Event) Pathname() string {
+	args := e.Base.Argv.Arguments()
+
+	switch e.Base.Syscall.Name {
+	case "sys_openat":
+		return args[1].Value.(string)
+	case "sys_open":
+		return args[0].Value.(string)
+	case "sys_unlink":
+		return args[0].Value.(string)
+	case "sys_mkdir":
+		return args[0].Value.(string)
+	case "sys_rmdir":
+		return args[0].Value.(string)
+	case "sys_execve":
+		return args[0].Value.(string)
+
+	}
+
+	return ""
+
+}
 
 var cmdTrace = &cobra.Command{
 	Use:   "trace",
@@ -139,7 +168,7 @@ var cmdTrace = &cobra.Command{
 				if !noContainers {
 					fmt.Printf("(%vms) %35s: [%9s] (%11s) %s(", latency, green(ev.Container.FQDN()), ev.Comm, errno, cyan(fn.CallName()))
 				} else {
-					fmt.Printf("(%vms) [%15s/%-8v] (%11s) %s(", latency, ev.Comm, ev.Pid, errno, cyan(fn.CallName()))
+					fmt.Printf("(%vms) [%15s/%-8v/%v] (%11s) %s(", latency, ev.Comm, ev.Pid, ev.Sid, errno, cyan(fn.CallName()))
 				}
 
 				for x, arg := range args {
@@ -243,16 +272,49 @@ var cmdTrace = &cobra.Command{
 				}
 			}()
 
+			type Env struct {
+				Event event.TraceEvent
+			}
+
+			var eval *vm.Program = nil
+			expression, err := cmd.Flags().GetString("expr")
+			if err != nil {
+				log.Fatal(err)
+			}
+			if expression != "" {
+				eval, err = expr.Compile(expression, expr.Env(Event{}))
+				if err != nil {
+					panic(err)
+				}
+			}
+
+			fmt.Println(eval)
+
 			go func() {
+				ev := new(event.TraceEvent)
 				for {
 					msg := <-evreader.Read()
-					ev := new(event.TraceEvent)
 
 					if _, err := ev.Ingest(msg); err != nil {
 						log.Fatal(err)
 					}
 
-					showMsg("", ev)
+					if eval != nil {
+						//args := ev.Argv.Arguments()
+						//fmt.Println(args)
+						event := Event{Base: ev}
+						result, err := expr.Run(eval, event)
+						if err != nil {
+							continue
+						}
+
+						if result.(bool) {
+							showMsg("", ev)
+						}
+
+					} else {
+						showMsg("", ev)
+					}
 				}
 			}()
 
@@ -286,4 +348,5 @@ func init() {
 	cmdTrace.Flags().StringP("output", "o", "cli", "output format")
 	cmdTrace.Flags().StringP("field-selector", "f", "", "field selector")
 	cmdTrace.Flags().Bool("no-containers", false, "disable container/k8s processing")
+	cmdTrace.Flags().String("expr", "", "boolean-expression matcher thingy")
 }
